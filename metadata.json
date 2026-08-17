@@ -1,0 +1,6 @@
+{
+  "name": "نظام إدارة الحوادث والعمليات الميدانية للمركبات",
+  "description": "منصة شاملة لربط الإدارة المركزية بالوكلاء الميدانيين لإدارة وتوثيق حوادث المركبات والتحقيق الميداني لحظياً",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
