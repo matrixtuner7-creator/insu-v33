@@ -1,9 +1,9 @@
 FROM node:20-slim
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm install --include=dev
 COPY . .
-RUN npx vite build && npx esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs
+RUN npm run build
 ENV NODE_ENV=production
 EXPOSE 3000
-CMD ["node", "dist/server.cjs"]
+CMD ["npm", "start"]
