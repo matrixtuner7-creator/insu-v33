@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="shieldGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#315EF5"/>
+      <stop offset="100%" stop-color="#1E40AF"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+  <!-- Base Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  
+  <!-- Outer Ring Accent -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="none" stroke="#315EF5" stroke-width="4" stroke-opacity="0.2"/>
+
+  <!-- Shield Shape in Center -->
+  <path d="M256,80 C320,80 384,100 384,140 C384,280 256,416 256,416 C256,416 128,280 128,140 C128,100 192,80 256,80 Z" fill="url(#shieldGrad)" filter="drop-shadow(0 10px 15px rgba(0,0,0,0.4))"/>
+
+  <!-- Stylized Car Shape on Shield -->
+  <path d="M192,230 L320,230 C330,230 338,238 338,248 L338,270 C338,275 334,280 328,280 L184,280 C178,280 174,275 174,270 L174,248 C174,238 182,230 192,230 Z" fill="#FFFFFF" opacity="0.9"/>
+  <!-- Car Windshield -->
+  <path d="M208,235 L304,235 L296,252 L216,252 Z" fill="#1E293B"/>
+  <!-- Car Headlights -->
+  <circle cx="196" cy="265" r="6" fill="#10B981"/>
+  <circle cx="316" cy="265" r="6" fill="#10B981"/>
+
+  <!-- Overlaid Checkmark (Verification Symbol) -->
+  <circle cx="330" cy="310" r="48" fill="url(#accentGrad)" stroke="#1E293B" stroke-width="8" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.3))"/>
+  <path d="M312,310 L324,322 L348,298" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

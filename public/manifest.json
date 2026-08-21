@@ -1,0 +1,18 @@
+{
+  "name": "نظام إدارة الحوادث والعمليات الميدانية",
+  "short_name": "العمليات الميدانية",
+  "description": "منصة شاملة لإدارة وتوثيق حوادث المركبات والتحقيق الميداني لحظياً",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0F172A",
+  "theme_color": "#315EF5",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

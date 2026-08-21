@@ -1,0 +1,1171 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { io, Socket } from 'socket.io-client';
+import { 
+  Send, 
+  Mic, 
+  Camera, 
+  Paperclip, 
+  CheckCheck, 
+  FileText, 
+  Image as ImageIcon, 
+  Volume2, 
+  Square, 
+  Play, 
+  Pause,
+  X, 
+  Shield, 
+  Radio, 
+  MessageSquare, 
+  Sparkles, 
+  Maximize2, 
+  Download,
+  AlertCircle,
+  RefreshCw,
+  Video,
+  SwitchCamera,
+  Phone,
+  Users,
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight,
+  CheckCircle2
+} from 'lucide-react';
+import { CaseMessage, FieldAgent } from '../types';
+import { getPublicShareUrl } from '../lib/shareUtils';
+import { radioAudio } from '../lib/radioAudio';
+
+interface CaseCommunicationBagProps {
+  incidentId: string;
+  incidentNumber: string;
+  currentUserName: string;
+  currentUserRole: 'Reception' | 'HQ' | 'Field Investigator' | 'admin' | 'investigator';
+  onClose?: () => void;
+  initialTab?: 'chat' | 'radio' | 'camera';
+  agents?: FieldAgent[];
+  currentAssignedAgentId?: string;
+  onAssignAgent?: (agentId: string) => void;
+}
+
+export const CaseCommunicationBag: React.FC<CaseCommunicationBagProps> = ({
+  incidentId,
+  incidentNumber,
+  currentUserName,
+  currentUserRole,
+  onClose,
+  initialTab = 'chat',
+  agents = [],
+  currentAssignedAgentId,
+  onAssignAgent
+}) => {
+  const MOBILE_SAFE_MODE = true;
+  const [activeTab, setActiveTab] = useState<'chat' | 'radio' | 'camera'>(initialTab);
+  const [messages, setMessages] = useState<CaseMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [selectedPhotoModal, setSelectedPhotoModal] = useState<string | null>(null);
+
+  // Multi-investigator selector state
+  const [availableAgents, setAvailableAgents] = useState<FieldAgent[]>(() => agents && agents.length > 0 ? agents : []);
+  const [selectedIntercomAgentId, setSelectedIntercomAgentId] = useState<string>(currentAssignedAgentId || 'all');
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  useEffect(() => {
+    if (agents && agents.length > 0) {
+      setAvailableAgents(agents);
+    } else {
+      fetch('/api/agents')
+        .then(r => r.json())
+        .then(data => {
+          if (Array.isArray(data)) setAvailableAgents(data);
+        })
+        .catch(() => {});
+    }
+  }, [agents]);
+
+  // Normal Voice Note Recording States
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const recordingTimerRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // PTT (Push-to-Talk) Walkie-Talkie States
+  const [isPttPressed, setIsPttPressed] = useState(false);
+  const [pttSpeakerName, setPttSpeakerName] = useState<string | null>(null);
+  const [pttSpeakerRole, setPttSpeakerRole] = useState<string | null>(null);
+  const [pttSeconds, setPttSeconds] = useState(0);
+  const pttTimerRef = useRef<any>(null);
+  const pttMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const pttAudioChunksRef = useRef<Blob[]>([]);
+
+  // Live Camera Viewfinder State
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'environment' | 'user'>('environment');
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Audio Playback State for list items
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nativeCameraInputRef = useRef<HTMLInputElement>(null);
+  const socketRef = useRef<Socket | null>(null);
+
+  // Fetch initial messages and connect Socket.IO
+  useEffect(() => {
+    const fetchMessages = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/cases/${encodeURIComponent(incidentId || incidentNumber || 'default')}/messages`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            setMessages(data);
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching messages:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchMessages();
+
+    const socket = io(window.location.origin, {
+      reconnectionAttempts: 3,
+      reconnectionDelay: 5000
+    });
+    socketRef.current = socket;
+
+    socket.emit("join_case", incidentId);
+    if (incidentNumber && incidentNumber !== incidentId) {
+      socket.emit("join_case", incidentNumber);
+    }
+
+    socket.on('connect', () => console.log("✅ Socket connected", socket.id));
+    socket.on('connect_error', (err) => console.error("❌ Socket connection error", err));
+    
+    socket.on('case:new_message', (msg: any) => {
+      console.log("📩 Received new message:", msg);
+      const msgCaseId = msg.incidentId || msg.caseId;
+      console.log("🔍 Message Case ID vs Local:", msgCaseId, incidentId, incidentNumber);
+      if (
+        !msgCaseId ||
+        msgCaseId === incidentId ||
+        msgCaseId === incidentNumber ||
+        (typeof incidentId === 'string' && typeof msgCaseId === 'string' && incidentId.includes(msgCaseId)) ||
+        (typeof incidentNumber === 'string' && typeof msgCaseId === 'string' && incidentNumber.includes(msgCaseId))
+      ) {
+        console.log("✅ Message passed filter, adding to state.");
+        setMessages(prev => {
+          if (prev.some(m => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+
+        // If message is from another user, play incoming beep
+        const sender = msg.sender || msg.senderName;
+        if (sender !== currentUserName) {
+          radioAudio.playIncomingAlert();
+        }
+      }
+    });
+
+    // PTT Live Relay events
+    socket.on('ptt:transmitting', (data: any) => {
+      if (data.senderName !== currentUserName) {
+        setPttSpeakerName(data.senderName);
+        setPttSpeakerRole(data.senderRole);
+        radioAudio.playPttStart();
+      }
+    });
+
+    socket.on('ptt:idle', (data: any) => {
+      if (data.senderName !== currentUserName) {
+        setPttSpeakerName(null);
+        setPttSpeakerRole(null);
+        radioAudio.playPttRelease();
+      }
+    });
+
+    socket.on('ptt:voice_transmitted', (data: any) => {
+      const sender = data.sender || data.senderName;
+      if (sender !== currentUserName && data.audioUrl) {
+        radioAudio.playVoice(data.audioUrl);
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, [incidentId, incidentNumber, currentUserName]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, activeTab]);
+
+  // Clean up camera stream on tab change
+  useEffect(() => {
+    if (activeTab === 'camera') {
+      startLiveCamera();
+    } else {
+      stopLiveCamera();
+    }
+  }, [activeTab, cameraFacingMode]);
+
+  // 1. Live Camera Handlers
+  const startLiveCamera = async () => {
+    if (MOBILE_SAFE_MODE) return;
+    try {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(t => t.stop());
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: cameraFacingMode,
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+      setCameraStream(stream);
+      setIsCameraActive(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn("Live camera access failed, falling back to native file input:", err);
+      setIsCameraActive(false);
+    }
+  };
+
+  const stopLiveCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(t => t.stop());
+      setCameraStream(null);
+    }
+    setIsCameraActive(false);
+  };
+
+  const handleCaptureLivePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) {
+      nativeCameraInputRef.current?.click();
+      return;
+    }
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      handleSendMessage('image', dataUrl, `صورة_ميدانية_${new Date().toISOString().slice(11, 19).replace(/:/g, '-')}.jpg`);
+      setActiveTab('chat');
+    }
+  };
+
+  // 2. Generic Message Sender
+  const handleSendMessage = async (
+    contentType: 'text' | 'voice' | 'image' | 'document' | 'ptt_broadcast',
+    content: string,
+    fileName?: string,
+    duration?: number
+  ) => {
+    if (!content.trim() && contentType === 'text') return;
+
+    const payload = {
+      sender: currentUserName || 'المحقق الميداني',
+      senderRole: currentUserRole || 'Field Investigator',
+      contentType,
+      content,
+      fileName: fileName || null,
+      mediaDurationSeconds: duration || null
+    };
+
+    try {
+      const res = await fetch(`/api/cases/${encodeURIComponent(incidentId || incidentNumber || 'default')}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        const newMsg = await res.json();
+        setMessages(prev => {
+          if (prev.some(m => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
+        setInputText('');
+      }
+    } catch (err) {
+      console.error("Error sending message:", err);
+    }
+  };
+
+  // 3. PTT Walkie-Talkie Push-to-Talk Engine
+  const startPttTransmission = async () => {
+    if (MOBILE_SAFE_MODE) {
+      alert("⚠️ PTT is temporarily disabled in MOBILE_SAFE_MODE to prevent Chrome crashes.");
+      return;
+    }
+    if (isPttPressed) return;
+    setIsPttPressed(true);
+    setPttSeconds(0);
+    radioAudio.playPttStart();
+
+    if (socketRef.current) {
+      socketRef.current.emit("ptt:start", {
+        senderName: currentUserName,
+        senderRole: currentUserRole,
+        incidentId,
+        channel: `قناة الطوارئ #${incidentNumber || '01'}`
+      });
+    }
+
+    pttTimerRef.current = setInterval(() => {
+      setPttSeconds(s => s + 1);
+    }, 1000);
+
+    try {
+      const mimeType = radioAudio.getOptimalAudioMimeType();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      pttMediaRecorderRef.current = recorder;
+      pttAudioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          pttAudioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const audioBlob = new Blob(pttAudioChunksRef.current, { type: mimeType || 'audio/mp4' });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Audio = reader.result as string;
+          const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('aac') ? 'aac' : 'webm';
+          handleSendMessage(
+            'ptt_broadcast',
+            base64Audio,
+            `بث_لاسلكي_${new Date().toLocaleTimeString().replace(/\s/g, '_')}.${ext}`,
+            pttSeconds || 3
+          );
+        };
+        reader.readAsDataURL(audioBlob);
+
+        // Stop media stream tracks
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      recorder.start(250);
+    } catch (err) {
+      console.warn("Microphone not available for PTT recording, operating in tactical signaling mode:", err);
+    }
+  };
+
+  const stopPttTransmission = () => {
+    if (!isPttPressed) return;
+    setIsPttPressed(false);
+    clearInterval(pttTimerRef.current);
+    radioAudio.playPttRelease();
+
+    if (socketRef.current) {
+      socketRef.current.emit("ptt:stop", {
+        senderName: currentUserName,
+        incidentId
+      });
+    }
+
+    if (pttMediaRecorderRef.current && pttMediaRecorderRef.current.state !== 'inactive') {
+      try {
+        pttMediaRecorderRef.current.stop();
+      } catch (e) {}
+    } else if (pttSeconds > 0) {
+      // Fallback synthetic transmission
+      handleSendMessage(
+        'ptt_broadcast',
+        'https://actions.google.com/sounds/v1/alarms/beep_short.ogg',
+        'نداء_لاسلكي_تكتيكي.ogg',
+        pttSeconds || 2
+      );
+    }
+  };
+
+  // 4. Voice Memo Recording (Standard Chat Voice Note)
+  const startVoiceRecording = async () => {
+    if (MOBILE_SAFE_MODE) {
+      alert("⚠️ Voice recording is temporarily disabled in MOBILE_SAFE_MODE.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64Audio = reader.result as string;
+          handleSendMessage('voice', base64Audio, `تسجيل_صوتي_${Date.now()}.webm`, recordingSeconds || 4);
+        };
+        reader.readAsDataURL(audioBlob);
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      recorder.start();
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds(s => s + 1);
+      }, 1000);
+    } catch (err) {
+      console.warn("Standard microphone error:", err);
+      // Simulated audio note fallback
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds(s => s + 1);
+      }, 1000);
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    clearInterval(recordingTimerRef.current);
+    setIsRecording(false);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    } else {
+      handleSendMessage('voice', 'https://actions.google.com/sounds/v1/alarms/beep_short.ogg', 'ملاحظة_صوتية.ogg', recordingSeconds || 3);
+    }
+  };
+
+  // 5. File & Photo Upload from File Picker
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'document') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      handleSendMessage(type, result, file.name);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  // Play/Pause voice message audio
+  const togglePlayAudio = (msgId: string, audioUrl: string) => {
+    if (playingMessageId === msgId) {
+      currentAudioRef.current?.pause();
+      setPlayingMessageId(null);
+    } else {
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+      }
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+      setPlayingMessageId(msgId);
+      audio.play().catch(() => setPlayingMessageId(null));
+      audio.onended = () => setPlayingMessageId(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-[#161B1F] text-[#F1F5F9] rounded-3xl overflow-hidden shadow-2xl border border-[#3A434C] select-none" dir="rtl">
+      
+      {/* HEADER WITH TACTICAL INDICATORS & NAVIGATION TABS */}
+      <div className="bg-[#161B1F] border-b border-[#3A434C] p-3 shrink-0">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-[#315EF5]/20 border border-[#315EF5]/30 flex items-center justify-center text-[#315EF5] shadow-lg">
+              <Radio className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-black text-sm text-[#F1F5F9]">حقيبة التكليف واللاسلكي</h3>
+                <span className="px-2 py-0.5 bg-[#315EF5]/20 text-[#315EF5] border border-[#315EF5]/30 rounded-lg text-[10px] font-mono font-bold">
+                  {incidentNumber || 'قضية ميدانية'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[10px] text-[#AAB2BA]">
+                <span className="w-2 h-2 bg-[#22A06B] rounded-full animate-ping"></span>
+                <span>قناة الطوارئ المشفرة • {currentUserName} ({currentUserRole === 'HQ' ? 'غرفة العمليات' : 'محقق ميداني'})</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {onClose && (
+              <button 
+                onClick={onClose} 
+                className="p-2 hover:bg-[#323A40] text-[#AAB2BA] hover:text-white rounded-xl transition-all"
+                title="إغلاق الحقيبة"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* 3 TOP TABS: 💬 المحادثة والمستندات | 📻 اللاسلكي PTT | 📷 الكاميرا الميدانية */}
+        <div className="grid grid-cols-3 gap-1.5 bg-[#1C2229] p-1 rounded-2xl border border-[#3A434C] text-xs font-bold">
+          <button
+            onClick={() => setActiveTab('chat')}
+            className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all ${
+              activeTab === 'chat'
+                ? 'bg-[#315EF5] text-white shadow-md'
+                : 'text-[#AAB2BA] hover:text-white hover:bg-[#323A40]'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>المراسلات ({messages.length})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('radio')}
+            className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all relative ${
+              activeTab === 'radio'
+                ? 'bg-[#22A06B] text-white shadow-md'
+                : 'text-[#AAB2BA] hover:text-white hover:bg-[#323A40]'
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5 text-[#22A06B]" />
+            <span>اللاسلكي PTT</span>
+            {pttSpeakerName && (
+              <span className="w-2 h-2 bg-[#D64545] rounded-full animate-ping absolute top-1 left-2"></span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('camera')}
+            className={`py-1.5 px-2 rounded-xl flex items-center justify-center gap-1.5 transition-all ${
+              activeTab === 'camera'
+                ? 'bg-[#315EF5] text-white shadow-md'
+                : 'text-[#AAB2BA] hover:text-white hover:bg-[#323A40]'
+            }`}
+          >
+            <Camera className="w-3.5 h-3.5 text-[#315EF5]" />
+            <span>الكاميرا الميدانية</span>
+          </button>
+        </div>
+
+        {/* MULTI-INVESTIGATOR INTERCOM & SWITCHER BAR */}
+        {availableAgents && availableAgents.length > 0 && (
+          <div className="mt-2.5 pt-2.5 border-t border-[#3A434C]">
+            <div className="flex items-center justify-between mb-1.5 px-1">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#F1F5F9]">
+                <Users className="w-3.5 h-3.5 text-[#315EF5]" />
+                <span>التنقل بين المحققين والتخاطب المباشر ({availableAgents.length})</span>
+              </div>
+              <span className="text-[10px] text-[#AAB2BA]">انقر على أي محقق للتخاطب أو التكليف</span>
+            </div>
+
+            <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-thin">
+              {/* Broadcast / All */}
+              <button
+                onClick={() => setSelectedIntercomAgentId('all')}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold shrink-0 transition-all flex items-center gap-1.5 ${
+                  selectedIntercomAgentId === 'all'
+                    ? 'bg-[#315EF5] text-white shadow ring-1 ring-[#315EF5]'
+                    : 'bg-[#1C2229] hover:bg-[#323A40] text-[#AAB2BA] border border-[#3A434C]'
+                }`}
+              >
+                <Radio className="w-3 h-3 text-[#315EF5]" />
+                <span>القناة العامة (الكل)</span>
+              </button>
+
+              {/* Each Investigator Button */}
+              {availableAgents.map((ag) => {
+                const isSelected = selectedIntercomAgentId === ag.id;
+                const isAssigned = currentAssignedAgentId === ag.id;
+                return (
+                  <button
+                    key={ag.id}
+                    onClick={() => setSelectedIntercomAgentId(ag.id)}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold shrink-0 transition-all flex items-center gap-2 ${
+                      isSelected
+                        ? 'bg-[#22A06B] text-white shadow ring-1 ring-[#22A06B]'
+                        : 'bg-[#1C2229] hover:bg-[#323A40] text-[#AAB2BA] border border-[#3A434C]'
+                    }`}
+                  >
+                    <div className="relative">
+                      <img
+                        src={ag.photo || 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'}
+                        alt=""
+                        className="w-5 h-5 rounded-full object-cover border border-[#3A434C]"
+                        onError={(e) => { (e.target as any).src = 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'; }}
+                      />
+                      <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-[#161B1F] ${ag.isActive !== false ? 'bg-[#22A06B]' : 'bg-[#7C8791]'}`}></span>
+                    </div>
+                    <span className="truncate max-w-[110px] text-[#F1F5F9]">{ag.name}</span>
+                    {isAssigned && (
+                      <span className="px-1.5 py-0.2 bg-[#315EF5]/20 text-[#315EF5] text-[9px] rounded font-mono border border-[#315EF5]/30">
+                        مكلف
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* SELECTED INVESTIGATOR ACTION CONTROLS */}
+            {selectedIntercomAgentId !== 'all' && (() => {
+              const activeAgent = availableAgents.find(a => a.id === selectedIntercomAgentId);
+              if (!activeAgent) return null;
+              const cleanPhone = (activeAgent.phone || (activeAgent as any)?.whatsapp || '+970590000000').replace(/[^0-9+]/g, '');
+              const agentShareUrl = getPublicShareUrl({
+                portal: 'agent',
+                investigator_id: activeAgent.id,
+                case_id: incidentNumber || incidentId
+              });
+              const waMsg = `🚨 تكليف وتواصل بشأن القضية رقم (${incidentNumber || incidentId})\nالزميل ${activeAgent.name}،\nرابط متابعة المعاينة الميدانية:\n${agentShareUrl}\nيرجى فتح الرابط والمتابعة فوراً.`;
+              const waLink = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(waMsg)}`;
+
+              return (
+                <div className="mt-2 p-2.5 bg-[#1C2229] border border-[#3A434C] rounded-2xl flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-[#22A06B]">
+                      قناة خاصة مع: <strong className="text-white">{activeAgent.name}</strong>
+                    </span>
+                    {activeAgent.phone && (
+                      <span className="text-[10px] font-mono text-[#AAB2BA]" style={{ direction: 'ltr' }}>
+                        {activeAgent.phone}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* WhatsApp Button */}
+                    <a
+                      href={waLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1 bg-[#22A06B] hover:bg-[#22A06B]/90 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all shadow"
+                    >
+                      <Phone className="w-3 h-3 fill-current" />
+                      <span>WhatsApp مباشر</span>
+                    </a>
+
+                    {/* Phone Call */}
+                    {activeAgent.phone && (
+                      <a
+                        href={`tel:${cleanPhone}`}
+                        className="px-2.5 py-1 bg-[#323A40] hover:bg-[#3A434C] text-[#F1F5F9] rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all border border-[#3A434C]"
+                      >
+                        <Phone className="w-3 h-3" />
+                        <span>اتصال هاتفي</span>
+                      </a>
+                    )}
+
+                    {/* Push-to-Talk Tab */}
+                    <button
+                      onClick={() => setActiveTab('radio')}
+                      className="px-2.5 py-1 bg-[#D6A83A] hover:bg-[#D6A83A]/90 text-slate-900 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all shadow"
+                    >
+                      <Radio className="w-3 h-3" />
+                      <span>PTT لاسلكي</span>
+                    </button>
+
+                    {/* Reassign / Assign Case to this Investigator */}
+                    {onAssignAgent && currentAssignedAgentId !== activeAgent.id && (
+                      <button
+                        onClick={() => onAssignAgent(activeAgent.id)}
+                        className="px-2.5 py-1 bg-[#315EF5] hover:bg-[#315EF5]/90 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all shadow"
+                      >
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>إسناد القضية إليه</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+
+      {/* BODY CONTENT AREA SWITCHING BASED ON ACTIVE TAB */}
+      <div className="flex-1 overflow-hidden relative flex flex-col bg-[#1C2229]">
+        
+        {/* ============================================================== */}
+        {/* 1. CHAT MESSAGES & EVIDENCE LIST TAB */}
+        {/* ============================================================== */}
+        {activeTab === 'chat' && (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            
+            {/* INCOMING PTT ALERT BANNER IF SOMEONE IS TRANSMITTING */}
+            {pttSpeakerName && (
+              <div className="bg-[#D64545]/20 border-b border-[#D64545]/40 px-4 py-2 flex items-center justify-between text-[#D64545] animate-pulse text-xs">
+                <div className="flex items-center gap-2 font-bold">
+                  <Radio className="w-4 h-4 text-[#D64545] animate-bounce" />
+                  <span>📻 بث لاسلكي جاري من: {pttSpeakerName} ({pttSpeakerRole || 'الميدان'})</span>
+                </div>
+                <span className="font-mono bg-[#D64545]/30 px-2 py-0.5 rounded text-[10px]">RX استماع</span>
+              </div>
+            )}
+
+            {/* MESSAGES SCROLL CONTAINER */}
+            <div className="flex-1 p-4 overflow-y-auto space-y-3">
+              {messages.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center text-[#7C8791] space-y-3 py-10">
+                  <div className="w-16 h-16 rounded-full bg-[#2A323A] flex items-center justify-center border border-[#3A434C] text-[#7C8791] shadow-inner">
+                    <Shield className="w-8 h-8 stroke-1" />
+                  </div>
+                  <div>
+                    <h4 className="font-black text-sm text-[#F1F5F9]">حقيبة التكليف جاهزة للمراسلة والتوثيق</h4>
+                    <p className="text-xs text-[#AAB2BA] mt-1 max-w-xs leading-relaxed">
+                      يمكنك إرسال رسائل نصية، تسجيلات صوتية، وبثوث لاسلكية PTT، والتقاط الصور بالكاميرا لحفظها فورياً في ملف القضية.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                messages.map((mItem: any, idx) => {
+                  const senderName = mItem.sender || mItem.senderName || 'مستخدم';
+                  const timestampVal = mItem.timestamp || mItem.sentAt || Date.now();
+                  const isMe = senderName === currentUserName;
+                  const isPttBroadcast = mItem.contentType === 'ptt_broadcast';
+
+                  return (
+                    <div key={mItem.id || idx} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                      <div className="flex items-center gap-1.5 mb-1 px-1 text-[10px]">
+                        <span className="font-black text-[#F1F5F9]">{senderName}</span>
+                        <span className="px-1.5 py-0.2 bg-[#2A323A] text-[#AAB2BA] rounded-md font-medium text-[9px] border border-[#3A434C]">
+                          {mItem.senderRole === 'HQ' ? 'غرفة العمليات' : mItem.senderRole === 'Reception' ? 'الاستقبال' : 'محقق ميداني'}
+                        </span>
+                        <span className="text-[#7C8791] font-mono">
+                          {new Date(timestampVal).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+
+                      <div className={`max-w-[85%] sm:max-w-md rounded-2xl p-3.5 shadow-md text-xs transition-all ${
+                        isMe 
+                          ? isPttBroadcast 
+                            ? 'bg-[#22A06B] text-white rounded-tl-none border border-[#22A06B]' 
+                            : 'bg-[#315EF5] text-white rounded-tl-none' 
+                          : isPttBroadcast
+                            ? 'bg-[#2A323A] text-[#22A06B] border border-[#22A06B]/50 rounded-tr-none'
+                            : 'bg-[#2A323A] text-[#F1F5F9] border border-[#3A434C] rounded-tr-none'
+                      }`}>
+                        {/* 1. TEXT */}
+                        {mItem.contentType === 'text' && (
+                          <p className="whitespace-pre-wrap leading-relaxed select-text font-normal">{mItem.content}</p>
+                        )}
+
+                        {/* 2. IMAGE / CAMERA EVIDENCE */}
+                        {(mItem.contentType === 'image' || mItem.contentType === 'photo' || mItem.contentType === 'camera') && (
+                          <div className="space-y-2">
+                            <div 
+                              onClick={() => setSelectedPhotoModal(mItem.content)}
+                              className="relative group rounded-xl overflow-hidden cursor-pointer border border-[#3A434C] bg-black/40"
+                            >
+                              <img 
+                                src={mItem.content} 
+                                alt="دليل فوتوغرافي" 
+                                className="w-full max-h-60 object-cover group-hover:scale-105 transition-transform duration-300" 
+                                referrerPolicy="no-referrer"
+                              />
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white gap-1 transition-opacity">
+                                <Maximize2 className="w-4 h-4" />
+                                <span className="text-[11px] font-bold">تكبير الصورة</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px] opacity-80 pt-0.5">
+                              <span className="flex items-center gap-1">
+                                <Camera className="w-3 h-3 text-[#22A06B]" />
+                                <span>{mItem.fileName || 'صورة توثيقية بالكاميرا'}</span>
+                              </span>
+                              <a 
+                                href={mItem.content} 
+                                download={mItem.fileName || 'evidence.jpg'} 
+                                className="text-[#315EF5] hover:text-white flex items-center gap-0.5 underline"
+                              >
+                                <Download className="w-3 h-3" />
+                                <span>تحميل</span>
+                              </a>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 3. VOICE RECORDING & PTT BROADCAST */}
+                        {(mItem.contentType === 'voice' || mItem.contentType === 'ptt_broadcast') && (
+                          <div className="flex items-center gap-3 py-1">
+                            <button
+                              onClick={() => togglePlayAudio(mItem.id, mItem.content)}
+                              className={`w-9 h-9 rounded-full flex items-center justify-center shadow transition-all ${
+                                playingMessageId === mItem.id 
+                                  ? 'bg-[#D6A83A] text-black animate-pulse' 
+                                  : 'bg-white/20 hover:bg-white/30 text-white'
+                              }`}
+                            >
+                              {playingMessageId === mItem.id ? (
+                                <Pause className="w-4 h-4 fill-current" />
+                              ) : (
+                                <Play className="w-4 h-4 fill-current mr-0.5" />
+                              )}
+                            </button>
+
+                            <div className="flex flex-col flex-1">
+                              <div className="flex items-center justify-between font-bold text-[11px]">
+                                <span className="flex items-center gap-1">
+                                  {isPttBroadcast ? (
+                                    <>
+                                      <Radio className="w-3.5 h-3.5 text-[#22A06B] inline" />
+                                      <span>نداء لاسلكي PTT</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Mic className="w-3.5 h-3.5 text-[#D6A83A] inline" />
+                                      <span>ملاحظة صوتية ميدانية</span>
+                                    </>
+                                  )}
+                                </span>
+                                <span className="font-mono text-[10px] opacity-80">
+                                  {mItem.mediaDurationSeconds ? `${mItem.mediaDurationSeconds}ث` : '0:05'}
+                                </span>
+                              </div>
+
+                              <div className="w-full bg-black/30 h-1.5 rounded-full overflow-hidden mt-1.5">
+                                <div className={`h-full ${playingMessageId === mItem.id ? 'bg-[#D6A83A] w-full animate-pulse' : 'bg-white/40 w-1/3'}`}></div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 4. DOCUMENT */}
+                        {mItem.contentType === 'document' && (
+                          <div className="flex items-center gap-3 p-2 bg-black/30 rounded-xl border border-white/10">
+                            <FileText className="w-7 h-7 text-[#D6A83A] shrink-0" />
+                            <div className="overflow-hidden flex-1">
+                              <p className="font-bold truncate text-[11px]">{mItem.fileName || 'مستند مرفق'}</p>
+                              <a 
+                                href={mItem.content} 
+                                download={mItem.fileName || 'document'} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="text-[10px] text-[#315EF5] hover:text-white underline block mt-0.5"
+                              >
+                                معاينة أو تنزيل الملف
+                              </a>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-end gap-1 mt-1 text-[9px] opacity-70 font-mono">
+                          <span>{new Date(timestampVal).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          <CheckCheck className="w-3 h-3 text-[#22A06B]" />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* CHAT INPUT BAR WITH CAMERA / UPLOAD / VOICE / SEND */}
+            <div className="p-3 bg-[#161B1F] border-t border-[#3A434C] flex items-center gap-2">
+              
+              {/* HIDDEN INPUTS */}
+              <input 
+                type="file" 
+                ref={nativeCameraInputRef} 
+                accept="image/*" 
+                capture="environment" 
+                className="hidden" 
+                onChange={(e) => handleFileUpload(e, 'image')} 
+              />
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg" 
+                className="hidden" 
+                onChange={(e) => handleFileUpload(e, fileInputRef.current?.files?.[0]?.type?.includes('image') ? 'image' : 'document')} 
+              />
+
+              {/* ACTION BUTTONS (Camera & Attach) */}
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => setActiveTab('camera')} 
+                  title="فتح كاميرا التوثيق الميداني"
+                  className="p-2.5 bg-[#2A323A] hover:bg-[#323A40] text-[#315EF5] rounded-xl border border-[#3A434C] transition-all flex items-center justify-center shadow"
+                >
+                  <Camera className="w-4 h-4" />
+                </button>
+
+                <button 
+                  onClick={() => fileInputRef.current?.click()} 
+                  title="إرفاق ملف أو صورة من المعرض"
+                  className="p-2.5 bg-[#2A323A] hover:bg-[#323A40] text-[#F1F5F9] rounded-xl border border-[#3A434C] transition-all flex items-center justify-center shadow"
+                >
+                  <Paperclip className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* INPUT BOX OR ACTIVE VOICE RECORDING STRIP */}
+              <div className="flex-1 relative flex items-center">
+                {isRecording ? (
+                  <div className="w-full bg-[#D64545]/20 border border-[#D64545]/50 rounded-xl px-3 py-2 flex items-center justify-between text-[#D64545] animate-pulse">
+                    <span className="flex items-center gap-2 font-bold text-xs">
+                      <span className="w-2.5 h-2.5 bg-[#D64545] rounded-full animate-ping"></span>
+                      تسجيل صوتي ({recordingSeconds} ثوانٍ)...
+                    </span>
+                    <button 
+                      onClick={stopVoiceRecording} 
+                      className="px-3 py-1 bg-[#D64545] hover:bg-[#D64545]/90 text-white rounded-lg text-xs font-black shadow"
+                    >
+                      إيقاف وإرسال
+                    </button>
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage('text', inputText)}
+                    placeholder="اكتب رسالة في حقيبة القضية..."
+                    className="w-full bg-[#2A323A] border border-[#3A434C] rounded-xl px-3.5 py-2 text-xs text-[#F1F5F9] focus:outline-none focus:border-[#315EF5] transition-all placeholder:text-[#7C8791]"
+                  />
+                )}
+              </div>
+
+              {/* SEND OR MIC BUTTON */}
+              {inputText.trim() ? (
+                <button
+                  onClick={() => handleSendMessage('text', inputText)}
+                  className="p-2.5 bg-[#315EF5] hover:bg-[#315EF5]/90 text-white rounded-xl shadow-lg transition-all flex items-center justify-center font-bold"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    if (isRecording) stopVoiceRecording();
+                    else startVoiceRecording();
+                  }}
+                  title={isRecording ? "إيقاف التسجيل" : "تسجيل ملاحظة صوتية"}
+                  className={`p-2.5 rounded-xl transition-all shadow flex items-center justify-center ${
+                    isRecording 
+                      ? 'bg-[#D64545] text-white animate-bounce' 
+                      : 'bg-[#2A323A] hover:bg-[#323A40] text-[#D6A83A] border border-[#3A434C]'
+                  }`}
+                >
+                  <Mic className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================== */}
+        {/* 2. DEDICATED PTT WALKIE-TALKIE TAB */}
+        {/* ============================================================== */}
+        {activeTab === 'radio' && (
+          <div className="flex-1 flex flex-col items-center justify-between p-6 bg-[#1C2229] text-center">
+            
+            {/* TACTICAL FREQUENCY SCREEN */}
+            <div className="w-full max-w-sm bg-[#161B1F] border-2 border-[#3A434C] rounded-3xl p-4 shadow-2xl relative overflow-hidden">
+              <div className="flex items-center justify-between border-b border-[#3A434C] pb-2 mb-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 bg-[#22A06B] rounded-full animate-pulse"></span>
+                  <span className="font-mono text-[#22A06B] font-bold text-xs">ONLINE • 462.5625 MHz</span>
+                </div>
+                <span className="text-[10px] text-[#7C8791] font-mono">CH-09 ENCRYPTED</span>
+              </div>
+
+              <div className="py-2 space-y-1">
+                <div className="text-[11px] text-[#AAB2BA]">القناة الحالية للقضية</div>
+                <div className="font-mono font-black text-lg text-white tracking-wider">
+                  {incidentNumber || 'قناة العمليات العامة'}
+                </div>
+              </div>
+
+              {/* STATUS INDICATOR */}
+              <div className="mt-3 py-2 px-3 rounded-xl border border-[#3A434C] bg-[#2A323A] transition-all text-xs font-black flex items-center justify-center gap-2">
+                {isPttPressed ? (
+                  <div className="text-[#D64545] bg-[#D64545]/20 border border-[#D64545]/40 w-full py-1.5 rounded-lg flex items-center justify-center gap-2 animate-pulse">
+                    <span className="w-3 h-3 bg-[#D64545] rounded-full animate-ping"></span>
+                    <span>🎙️ جاري البث والإرسال (TX)... [{pttSeconds}ث]</span>
+                  </div>
+                ) : pttSpeakerName ? (
+                  <div className="text-[#D6A83A] bg-[#D6A83A]/20 border border-[#D6A83A]/40 w-full py-1.5 rounded-lg flex items-center justify-center gap-2 animate-pulse">
+                    <Volume2 className="w-4 h-4 text-[#D6A83A] animate-bounce" />
+                    <span>🔊 استقبال نداء من: {pttSpeakerName} (RX)</span>
+                  </div>
+                ) : (
+                  <div className="text-[#22A06B] bg-[#22A06B]/20 border border-[#22A06B]/40 w-full py-1.5 rounded-lg flex items-center justify-center gap-1.5">
+                    <span>🟢 القناة جاهزة ومتاحة للاستماع والإرسال</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* GIANT PTT BUTTON */}
+            <div className="py-4">
+              <button
+                onMouseDown={startPttTransmission}
+                onMouseUp={stopPttTransmission}
+                onTouchStart={(e) => { e.preventDefault(); startPttTransmission(); }}
+                onTouchEnd={(e) => { e.preventDefault(); stopPttTransmission(); }}
+                className={`w-44 h-44 rounded-full flex flex-col items-center justify-center transition-all duration-150 border-8 shadow-2xl active:scale-95 select-none ${
+                  isPttPressed
+                    ? 'bg-[#D64545] border-red-400 text-white shadow-red-600/70 scale-105 animate-pulse ring-8 ring-red-500/30'
+                    : 'bg-gradient-to-tr from-[#315EF5] to-indigo-600 border-[#315EF5]/60 hover:border-[#315EF5] text-white shadow-blue-600/50 hover:shadow-blue-500/80'
+                }`}
+              >
+                <Mic className={`w-14 h-14 mb-2 ${isPttPressed ? 'animate-bounce' : 'opacity-90'}`} />
+                <span className="font-black text-sm tracking-wide">
+                  {isPttPressed ? 'افلت لإنهاء البث' : 'اضغط للتحدث (PTT)'}
+                </span>
+                <span className="text-[10px] opacity-80 mt-1 font-mono">
+                  {isPttPressed ? `${pttSeconds} ثوانٍ` : 'HOLD TO TALK'}
+                </span>
+              </button>
+            </div>
+
+            {/* QUICK FOOTER HINTS */}
+            <div className="w-full max-w-xs text-[11px] text-[#AAB2BA] leading-relaxed bg-[#2A323A] p-3 rounded-2xl border border-[#3A434C]">
+              اضغط مع الاستمرار للتحدث بالصوت المباشر عبر اللاسلكي مع غرفة العمليات وباقي المحققين في نطاق القضية.
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================== */}
+        {/* 3. LIVE CAMERA VIEWFINDER TAB */}
+        {/* ============================================================== */}
+        {activeTab === 'camera' && (
+          <div className="flex-1 flex flex-col items-center justify-between p-4 bg-[#1C2229] relative">
+            
+            {/* HIDDEN CANVAS FOR FRAME EXTRACTION */}
+            <canvas ref={canvasRef} className="hidden" />
+
+            {/* VIEWFINDER FRAME */}
+            <div className="w-full max-w-md flex-1 rounded-3xl overflow-hidden relative bg-[#161B1F] border border-[#3A434C] flex items-center justify-center">
+              {isCameraActive ? (
+                <>
+                  <video 
+                    ref={videoRef} 
+                    autoPlay 
+                    playsInline 
+                    muted 
+                    className="w-full h-full object-cover"
+                  />
+                  {/* TACTICAL VIEWFINDER OVERLAY */}
+                  <div className="absolute inset-0 border-2 border-white/20 pointer-events-none rounded-3xl m-4 flex flex-col justify-between p-3">
+                    <div className="flex justify-between items-center text-[10px] font-mono text-[#22A06B] bg-black/60 px-2 py-1 rounded-lg backdrop-blur-sm self-start">
+                      <span>📷 LIVE EVIDENCE CAM</span>
+                    </div>
+                    <div className="w-12 h-12 border-2 border-[#22A06B]/60 rounded-full self-center"></div>
+                    <div className="text-[10px] text-right font-mono text-white/80 bg-black/60 px-2 py-1 rounded-lg backdrop-blur-sm self-end">
+                      <span>{incidentNumber}</span>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="text-center p-6 space-y-3 text-[#AAB2BA]">
+                  <Camera className="w-12 h-12 text-[#7C8791] mx-auto" />
+                  <p className="text-xs">جاري تشغيل الكاميرا المباشرة أو استخدام كاميرا الجهاز...</p>
+                  <button 
+                    onClick={() => nativeCameraInputRef.current?.click()}
+                    className="px-4 py-2 bg-[#315EF5] text-white rounded-xl text-xs font-bold shadow"
+                  >
+                    فتح كاميرا الهاتف الأصلية
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* CAMERA CONTROLS BAR */}
+            <div className="w-full max-w-md pt-4 flex items-center justify-around">
+              {/* SWITCH CAMERA (Front/Back) */}
+              <button
+                onClick={() => setCameraFacingMode(m => m === 'environment' ? 'user' : 'environment')}
+                title="تبديل الكاميرا"
+                className="p-3 bg-[#2A323A] hover:bg-[#323A40] text-[#F1F5F9] rounded-2xl border border-[#3A434C] shadow"
+              >
+                <SwitchCamera className="w-5 h-5" />
+              </button>
+
+              {/* SHUTTER CAPTURE BUTTON */}
+              <button
+                onClick={handleCaptureLivePhoto}
+                className="w-18 h-18 rounded-full border-4 border-[#F1F5F9] bg-[#D64545] hover:bg-[#D64545]/90 shadow-2xl flex items-center justify-center transition-all active:scale-95"
+              >
+                <div className="w-14 h-14 rounded-full bg-white flex items-center justify-center">
+                  <Camera className="w-6 h-6 text-slate-900" />
+                </div>
+              </button>
+
+              {/* NATIVE GALLERY PICKER */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                title="اختيار من المعرض"
+                className="p-3 bg-[#2A323A] hover:bg-[#323A40] text-[#F1F5F9] rounded-2xl border border-[#3A434C] shadow"
+              >
+                <ImageIcon className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* PHOTO LIGHTBOX MODAL */}
+      {selectedPhotoModal && (
+        <div 
+          onClick={() => setSelectedPhotoModal(null)}
+          className="fixed inset-0 z-[999999] bg-black/90 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div className="relative max-w-3xl max-h-[90vh] flex flex-col items-center">
+            <button 
+              onClick={() => setSelectedPhotoModal(null)}
+              className="absolute -top-10 left-0 p-2 bg-[#2A323A] hover:bg-[#323A40] text-white rounded-full font-bold shadow border border-[#3A434C]"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img 
+              src={selectedPhotoModal} 
+              alt="معاينة الصورة المكبرة" 
+              className="max-h-[80vh] w-auto rounded-2xl shadow-2xl border border-[#3A434C] object-contain"
+              referrerPolicy="no-referrer"
+            />
+            <div className="mt-3 flex items-center gap-3">
+              <a 
+                href={selectedPhotoModal} 
+                download={`دليل_${incidentNumber || 'accident'}.jpg`}
+                className="px-4 py-2 bg-[#315EF5] hover:bg-[#315EF5]/90 text-white rounded-xl font-bold text-xs flex items-center gap-2 shadow"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Download className="w-4 h-4" />
+                <span>تحميل الدليل الفوتوغرافي</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
